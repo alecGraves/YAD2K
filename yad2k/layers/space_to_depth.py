@@ -1,55 +1,66 @@
 from keras import backend as K
-from keras.engine.topology import Layer
-import itertools
-
+from keras.engine.topology import Layer, InputSpec
 
 class SpaceToDepth(Layer):
     '''
     keras implementation of space_to_depth as a layer
     '''
-    def __init__(self, scale_factor=2, **kwargs):
-        self.scale_factor = scale_factor
-        self.dim_ordering = K.image_dim_ordering()
-        if self.dim_ordering == 'channels_first':
+    def __init__(self, block_size=2, **kwargs):
+        self.block_size = block_size
+
+        if K.image_dim_ordering() == 'channels_first':
             self.channls_first = True
         else:
             self.channels_first = False
+
         super(SpaceToDepth, self).__init__(**kwargs)
 
     def build(self, input_shape):
+        self.input_spec = [InputSpec(shape=input_shape)]
         super(SpaceToDepth, self).build(input_shape)
 
-    def call(self, x):
+    def call(self, x, mask=None):
         """
         Uses phase shift algorithm to convert channels/depth for spatial resolution
         """
-        scale = 2
-        data_format = K.image_dim_ordering().lower()
-        if self.channels_first == True:
-            b, k, row, col = K.int_shape(x)
-            if b ==  None: b = 0
-            output_shape = (b, k // (scale ** 2), row * scale, col * scale)
-            out = K.zeros(output_shape)
-            r = scale
-            for y, x in itertools.product(range(scale), repeat=2):
-                out = K.update_add(out[:, :, y::r, x::r], x[:, r * y + x:: r * r, :, :])
+        out_shape = list(self.compute_output_shape(self.input_spec[0].shape))
+        if out_shape[0] is None:
+            out_shape[0] = 1
+        #out = K.variable(K.placeholder(out_shape)*0)
+        #out = K.variable(K.zeros_like(K.placeholder(out_shape))) 
+        out = K.variable(K.placeholder(out_shape))
+        #out = K.reshape(K.ones_like(x, dtype=K.floatx()), (-1, out_shape[1], out_shape[2], out_shape[3]))
+        r = self.block_size
+        if self.channels_first:
+            for a, b in [(x, y) for x in range(r) for y in range(r)]: #itertools.product(range(r), repeat=2)
+                K.update(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
+                #out[:, r * a + b:: r * r, :, :] += x[:, :, a::r, b::r]
         else:
-            b, row, col, k = K.int_shape(x)
-            if b ==  None: b = 0
-            output_shape = (b, row * scale, col * scale, k // (scale ** 2))
-            out = K.zeros(output_shape)
-            r = scale
-            for y, x in itertools.product(range(scale), repeat=2):
-                out = K.update_add(out[:, y::r, x::r, :], x[:, :, :, r * y + x:: r * r])
-        return out#K._postprocess_conv2d_output(out, x, None, None, None, data_format)
+            for a, b in [(x, y) for x in range(r) for y in range(r)]:
+                K.update(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
+                #out[:, :, :, r * a + b:: r * r] += x[:, a::r, b::r, :]
+        return out
 
 
     def compute_output_shape(self, input_shape):
-        """Determine SpaceToDepth output shape
         """
-        if self.channels_first == True:
-            b, k, r, c = input_shape
-            return (b, k // (self.scale_factor ** 2), r * self.scale_factor, c * self.scale_factor)
+        Determine SpaceToDepth output shape
+        """
+        if self.channels_first:
+            in_height = input_shape[2]
+            in_width = input_shape[3]
+            in_depth = input_shape[1]
         else:
-            b, r, c, k = input_shape
-            return (b, r * self.scale_factor, c * self.scale_factor, k // (self.scale_factor ** 2))
+            in_height = input_shape[1]
+            in_width = input_shape[2]
+            in_depth = input_shape[3]
+
+        batch_size = input_shape[0]
+        out_height = in_height // self.block_size
+        out_width = in_width // self.block_size
+        out_depth = in_depth * (self.block_size ** 2)
+
+        if self.channels_first:
+            return batch_size, out_depth, out_height, out_width
+        else:
+            return batch_size, out_height, out_width, out_depth

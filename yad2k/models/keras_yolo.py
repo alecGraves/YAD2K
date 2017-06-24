@@ -36,7 +36,7 @@ def yolo_body(inputs, num_anchors, num_classes):
     conv13 = darknet.layers[43].output
     conv21 = DarknetConv2D_BN_Leaky(64, (1, 1))(conv13)
     # TODO: Allow Keras Lambda to use func arguments for output_shape?
-    conv21_reshaped = SpaceToDepth(scale_factor=2)(conv21)
+    conv21_reshaped = SpaceToDepth(block_size=2)(conv21)
 
     x = concatenate([conv21_reshaped, conv20])
     x = DarknetConv2D_BN_Leaky(1024, (3, 3))(x)
