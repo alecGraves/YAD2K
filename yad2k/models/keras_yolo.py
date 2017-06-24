@@ -3,12 +3,14 @@ import sys
 
 import numpy as np
 import tensorflow as tf
+import itertools
 from keras import backend as K
 from keras.layers import Lambda
 from keras.layers.merge import concatenate
 from keras.models import Model
 
 from ..utils import compose
+from ..layers.space_to_depth import SpaceToDepth
 from .keras_darknet19 import (DarknetConv2D, DarknetConv2D_BN_Leaky,
                               darknet_body)
 
@@ -24,24 +26,6 @@ voc_classes = [
 ]
 
 
-def space_to_depth_x2(x):
-    """Thin wrapper for Tensorflow space_to_depth with block_size=2."""
-    # Import currently required to make Lambda work.
-    # See: https://github.com/fchollet/keras/issues/5088#issuecomment-273851273
-    import tensorflow as tf
-    return tf.space_to_depth(x, block_size=2)
-
-
-def space_to_depth_x2_output_shape(input_shape):
-    """Determine space_to_depth output shape for block_size=2.
-
-    Note: For Lambda with TensorFlow backend, output shape may not be needed.
-    """
-    return (input_shape[0], input_shape[1] // 2, input_shape[2] // 2, 4 *
-            input_shape[3]) if input_shape[1] else (input_shape[0], None, None,
-                                                    4 * input_shape[3])
-
-
 def yolo_body(inputs, num_anchors, num_classes):
     """Create YOLO_V2 model CNN body in Keras."""
     darknet = Model(inputs, darknet_body()(inputs))
@@ -52,10 +36,7 @@ def yolo_body(inputs, num_anchors, num_classes):
     conv13 = darknet.layers[43].output
     conv21 = DarknetConv2D_BN_Leaky(64, (1, 1))(conv13)
     # TODO: Allow Keras Lambda to use func arguments for output_shape?
-    conv21_reshaped = Lambda(
-        space_to_depth_x2,
-        output_shape=space_to_depth_x2_output_shape,
-        name='space_to_depth')(conv21)
+    conv21_reshaped = SpaceToDepth(scale_factor=2)(conv21)
 
     x = concatenate([conv21_reshaped, conv20])
     x = DarknetConv2D_BN_Leaky(1024, (3, 3))(x)
@@ -288,7 +269,7 @@ def yolo_loss(args,
     total_loss = 0.5 * (
         confidence_loss_sum + classification_loss_sum + coordinates_loss_sum)
     if print_loss:
-        total_loss = tf.Print(
+        total_loss = K.print_tensor(
             total_loss, [
                 total_loss, confidence_loss_sum, classification_loss_sum,
                 coordinates_loss_sum
