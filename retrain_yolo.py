@@ -15,7 +15,8 @@ from keras.models import load_model, Model
 from keras.callbacks import TensorBoard, ModelCheckpoint, EarlyStopping
 
 from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
-                                     yolo_eval, yolo_head, yolo_loss)
+                                     yolo_eval, yolo_head, yolo_loss,
+                                     SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
 
 # Args
@@ -44,6 +45,8 @@ argparser.add_argument(
 YOLO_ANCHORS = np.array(
     ((0.57273, 0.677385), (1.87446, 2.06253), (3.33843, 5.47434),
      (7.88282, 3.52778), (9.77052, 9.16828)))
+
+#custom_layers = {'SpaceToDepth' : SpaceToDepth}
 
 def _main(args):
     data_path = os.path.expanduser(args.data_path)

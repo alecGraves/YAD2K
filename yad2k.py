@@ -13,8 +13,8 @@ from collections import defaultdict
 
 import numpy as np
 from keras import backend as K
-from keras.layers import (Conv2D, GlobalAveragePooling2D, Input, Lambda,
-                          MaxPooling2D)
+from keras.layers import (Conv2D, GlobalAveragePooling2D, Input, 
+                         MaxPooling2D)
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.merge import concatenate
 from keras.layers.normalization import BatchNormalization
@@ -22,8 +22,7 @@ from keras.models import Model
 from keras.regularizers import l2
 from keras.utils.vis_utils import plot_model as plot
 
-from yad2k.models.keras_yolo import (space_to_depth_x2,
-                                     space_to_depth_x2_output_shape)
+from yad2k.models.keras_yolo import SpaceToDepth
 
 parser = argparse.ArgumentParser(
     description='Yet Another Darknet To Keras Converter.')
@@ -229,11 +228,7 @@ def _main(args):
         elif section.startswith('reorg'):
             block_size = int(cfg_parser[section]['stride'])
             assert block_size == 2, 'Only reorg with stride 2 supported.'
-            all_layers.append(
-                Lambda(
-                    space_to_depth_x2,
-                    output_shape=space_to_depth_x2_output_shape,
-                    name='space_to_depth_x2')(prev_layer))
+            all_layers.append(SpaceToDepth()(prev_layer))
             prev_layer = all_layers[-1]
 
         elif section.startswith('region'):

@@ -5,12 +5,11 @@ import numpy as np
 import tensorflow as tf
 import itertools
 from keras import backend as K
-from keras.layers import Lambda
-from keras.layers.merge import concatenate
+from keras.layers import Layer
+from keras.layers import Concatenate
 from keras.models import Model
 
 from ..utils import compose
-from ..layers.space_to_depth import SpaceToDepth
 from .keras_darknet19 import (DarknetConv2D, DarknetConv2D_BN_Leaky,
                               darknet_body)
 
@@ -25,6 +24,66 @@ voc_classes = [
     "pottedplant", "sheep", "sofa", "train", "tvmonitor"
 ]
 
+class SpaceToDepth(Layer):
+    '''
+    keras implementation of space_to_depth as a layer
+    '''
+    def __init__(self, block_size=2, **kwargs):
+        self.block_size = block_size
+        super(SpaceToDepth, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        super(SpaceToDepth, self).build(input_shape)
+
+    def call(self, x, mask=None):
+        """
+        Uses algorithms to convert spatial resolution to channels/depth
+        """
+        if K.backend() == "tensorflow":
+            return tf.space_to_depth(x, block_size=self.block_size)
+        else:
+            out_shape = list(self.compute_output_shape(K.int_shape(x)))
+
+            out = K.placeholder(out_shape)
+
+            r = self.block_size
+            products = [(x, y) for x in range(r) for y in range(r)]
+            if K.image_data_format() == 'channels_first':
+                for a, b in products:
+                    K.update(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
+            else:
+                for a, b in products:
+                    K.update(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
+            return out
+
+    # def get_config(self):
+    #     config = {'block_size' : self.block_size}
+    #     base_config = super(SpaceToDepth, self).get_config()
+    #     return dict(list(base_config.items()) + list(config.items()))
+
+
+    def compute_output_shape(self, input_shape):
+        """
+        Determine SpaceToDepth output shape
+        """
+        if K.image_data_format() == 'channels_first':
+            in_height = input_shape[2]
+            in_width = input_shape[3]
+            in_depth = input_shape[1]
+        else:
+            in_height = input_shape[1]
+            in_width = input_shape[2]
+            in_depth = input_shape[3]
+
+        batch_size = input_shape[0]
+        out_height = in_height // self.block_size
+        out_width = in_width // self.block_size
+        out_depth = in_depth * (self.block_size ** 2)
+
+        if K.image_data_format() == 'channels_first':
+            return batch_size, out_depth, out_height, out_width
+        else:
+            return batch_size, out_height, out_width, out_depth
 
 def yolo_body(inputs, num_anchors, num_classes):
     """Create YOLO_V2 model CNN body in Keras."""
@@ -35,10 +94,14 @@ def yolo_body(inputs, num_anchors, num_classes):
 
     conv13 = darknet.layers[43].output
     conv21 = DarknetConv2D_BN_Leaky(64, (1, 1))(conv13)
-    # TODO: Allow Keras Lambda to use func arguments for output_shape?
+
     conv21_reshaped = SpaceToDepth(block_size=2)(conv21)
 
-    x = concatenate([conv21_reshaped, conv20])
+    if K.image_data_format() == "channels_first":
+        x = Concatenate(axis=1)([conv21_reshaped, conv20])
+    else:
+        x = Concatenate()([conv21_reshaped, conv20])
+
     x = DarknetConv2D_BN_Leaky(1024, (3, 3))(x)
     x = DarknetConv2D(num_anchors * (num_classes + 5), (1, 1))(x)
     return Model(inputs, x)
@@ -241,7 +304,7 @@ def yolo_loss(args,
     # NOTE: YOLO does not use binary cross-entropy here.
     no_object_weights = (no_object_scale * (1 - object_detections) *
                          (1 - detectors_mask))
-    no_objects_loss = no_object_weights * K.square(-pred_confidence)
+    no_objects_loss = no_object_weights * K.square(-1*pred_confidence)
 
     if rescore_confidence:
         objects_loss = (object_scale * detectors_mask *
@@ -295,9 +358,9 @@ def yolo_filter_boxes(boxes, box_confidence, box_class_probs, threshold=.6):
     prediction_mask = box_class_scores >= threshold
 
     # TODO: Expose tf.boolean_mask to Keras backend?
-    boxes = tf.boolean_mask(boxes, prediction_mask)
-    scores = tf.boolean_mask(box_class_scores, prediction_mask)
-    classes = tf.boolean_mask(box_classes, prediction_mask)
+    boxes = np.array(boxes)[prediction_mask]
+    scores = np.array(box_class_scores)[prediction_mask]
+    classes = np.array(box_classes)[prediction_mask]
     return boxes, scores, classes
 
 
