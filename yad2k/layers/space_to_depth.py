@@ -21,24 +21,21 @@ class SpaceToDepth(Layer):
 
     def call(self, x, mask=None):
         """
-        Uses phase shift algorithm to convert channels/depth for spatial resolution
+        Uses phase shift algorithm to convert spatial resolution to channels/depth
         """
         out_shape = list(self.compute_output_shape(self.input_spec[0].shape))
         if out_shape[0] is None:
-            out_shape[0] = 1
-        #out = K.variable(K.placeholder(out_shape)*0)
-        #out = K.variable(K.zeros_like(K.placeholder(out_shape))) 
+            out_shape[0] = 0
+
         out = K.variable(K.placeholder(out_shape))
-        #out = K.reshape(K.ones_like(x, dtype=K.floatx()), (-1, out_shape[1], out_shape[2], out_shape[3]))
+
         r = self.block_size
         if self.channels_first:
-            for a, b in [(x, y) for x in range(r) for y in range(r)]: #itertools.product(range(r), repeat=2)
+            for a, b in [(x, y) for x in range(r) for y in range(r)]:
                 K.update(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
-                #out[:, r * a + b:: r * r, :, :] += x[:, :, a::r, b::r]
         else:
             for a, b in [(x, y) for x in range(r) for y in range(r)]:
                 K.update(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
-                #out[:, :, :, r * a + b:: r * r] += x[:, a::r, b::r, :]
         return out
 
 
