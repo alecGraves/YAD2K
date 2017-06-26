@@ -2,7 +2,6 @@
 import sys
 
 import numpy as np
-import tensorflow as tf
 import itertools
 from keras import backend as K
 from keras.layers import Layer
@@ -40,26 +39,22 @@ class SpaceToDepth(Layer):
         Uses algorithms to convert spatial resolution to channels/depth
         """
         if K.backend() == "tensorflow":
+            import tensorflow as tf
             return tf.space_to_depth(x, block_size=self.block_size)
         else:
-            out_shape = list(self.compute_output_shape(K.int_shape(x)))
+            out_shape = self.compute_output_shape(K.shape(x))
 
-            out = K.placeholder(out_shape)
+            out = K.reshape(K.zeros_like(x), out_shape)
 
             r = self.block_size
             products = [(x, y) for x in range(r) for y in range(r)]
             if K.image_data_format() == 'channels_first':
                 for a, b in products:
-                    K.update(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
+                    K.update_add(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
             else:
                 for a, b in products:
-                    K.update(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
+                    K.update_add(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
             return out
-
-    # def get_config(self):
-    #     config = {'block_size' : self.block_size}
-    #     base_config = super(SpaceToDepth, self).get_config()
-    #     return dict(list(base_config.items()) + list(config.items()))
 
 
     def compute_output_shape(self, input_shape):
@@ -96,12 +91,7 @@ def yolo_body(inputs, num_anchors, num_classes):
     conv21 = DarknetConv2D_BN_Leaky(64, (1, 1))(conv13)
 
     conv21_reshaped = SpaceToDepth(block_size=2)(conv21)
-
-    if K.image_data_format() == "channels_first":
-        x = Concatenate(axis=1)([conv21_reshaped, conv20])
-    else:
-        x = Concatenate()([conv21_reshaped, conv20])
-
+    x = Concatenate()([conv21_reshaped, conv20])
     x = DarknetConv2D_BN_Leaky(1024, (3, 3))(x)
     x = DarknetConv2D(num_anchors * (num_classes + 5), (1, 1))(x)
     return Model(inputs, x)
@@ -170,7 +160,14 @@ def yolo_head(feats, anchors, num_classes):
     box_xy = K.sigmoid(feats[..., :2])
     box_wh = K.exp(feats[..., 2:4])
     box_confidence = K.sigmoid(feats[..., 4:5])
-    box_class_probs = K.softmax(feats[..., 5:])
+
+    if K.backend() == 'theano': # theano softmax only works on 2d input for now
+        class_values = feats[..., 5:]
+        exp_x = K.exp(class_values)
+        sum_exp_x = K.expand_dims(K.sum(exp_x, axis=-1))
+        box_class_probs = exp_x/sum_exp_x
+    else:
+        box_class_probs = K.softmax(feats[..., 5:])
 
     # Adjust preditions to each spatial grid point and anchor size.
     # Note: YOLO iterates over height index before width index.
@@ -291,11 +288,11 @@ def yolo_loss(args,
     iou_scores = intersect_areas / union_areas
 
     # Best IOUs for each location.
-    best_ious = K.max(iou_scores, axis=4)  # Best IOU scores.
+    best_ious = K.max(iou_scores, axis=-1)  # Best IOU scores.
     best_ious = K.expand_dims(best_ious)
 
     # A detector has found an object if IOU > thresh for some true box.
-    object_detections = K.cast(best_ious > 0.6, K.dtype(best_ious))
+    object_detections = K.cast(K.greater(best_ious, 0.6), K.dtype(best_ious))
 
     # TODO: Darknet region training includes extra coordinate loss for early
     # training steps to encourage predictions to match anchor priors.
@@ -318,13 +315,24 @@ def yolo_loss(args,
     # NOTE: YOLO does not use categorical cross-entropy loss here.
     matching_classes = K.cast(matching_true_boxes[..., 4], 'int32')
     matching_classes = K.one_hot(matching_classes, num_classes)
-    classification_loss = (class_scale * detectors_mask *
-                           K.square(matching_classes - pred_class_prob))
+    if K.backend() == 'theano': # theano  does not know what broadcasting is
+        c1 = K.tile(class_scale * detectors_mask, (1, 1, 1, 1, num_classes))
+        c2 = K.square(matching_classes - pred_class_prob)
+        classification_loss = c1 * c2
+    else:
+        classification_loss = (class_scale * detectors_mask * 
+                               K.square(matching_classes - pred_class_prob))
 
     # Coordinate loss for matching detection boxes.
     matching_boxes = matching_true_boxes[..., 0:4]
-    coordinates_loss = (coordinates_scale * detectors_mask *
+    if K.backend() == 'theano': # theano does not know what broadcasting is
+        c1 = K.tile(coordinates_scale * detectors_mask, (1, 1, 1, 1, 4))
+        c2 = K.square(matching_boxes - pred_boxes)
+        coordinates_loss = c1 * c2
+    else:
+        coordinates_loss = (coordinates_scale * detectors_mask *
                         K.square(matching_boxes - pred_boxes))
+
 
     confidence_loss_sum = K.sum(confidence_loss)
     classification_loss_sum = K.sum(classification_loss)

@@ -12,12 +12,17 @@ import tensorflow as tf
 from keras import backend as K
 from keras.layers import Input, Lambda, Conv2D
 from keras.models import load_model, Model
-from keras.callbacks import TensorBoard, ModelCheckpoint, EarlyStopping
+from keras.callbacks import ModelCheckpoint, EarlyStopping
 
 from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
                                      yolo_eval, yolo_head, yolo_loss,
                                      SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
+
+import theano
+
+theano.config.optimizer = "fast_compile"
+# theano.config.exception_verbosity='high'
 
 # Args
 argparser = argparse.ArgumentParser(
@@ -46,7 +51,7 @@ YOLO_ANCHORS = np.array(
     ((0.57273, 0.677385), (1.87446, 2.06253), (3.33843, 5.47434),
      (7.88282, 3.52778), (9.77052, 9.16828)))
 
-#custom_layers = {'SpaceToDepth' : SpaceToDepth}
+CUSTOM_DICT = {'SpaceToDepth' : SpaceToDepth}
 
 def _main(args):
     data_path = os.path.expanduser(args.data_path)
@@ -199,7 +204,7 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
         if not os.path.exists(topless_yolo_path):
             print("CREATING TOPLESS WEIGHTS FILE")
             yolo_path = os.path.join('model_data', 'yolo.h5')
-            model_body = load_model(yolo_path)
+            model_body = load_model(yolo_path, CUSTOM_DICT)
             model_body = Model(model_body.inputs, model_body.layers[-2].output)
             model_body.save_weights(topless_yolo_path)
         topless_yolo.load_weights(topless_yolo_path)
@@ -221,8 +226,7 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
             arguments={'anchors': anchors,
                        'num_classes': len(class_names)})([
                            model_body.output, boxes_input,
-                           detectors_mask_input, matching_boxes_input
-                       ])
+                           detectors_mask_input, matching_boxes_input])
 
     model = Model(
         [model_body.input, boxes_input, detectors_mask_input,
@@ -245,8 +249,6 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
             'yolo_loss': lambda y_true, y_pred: y_pred
         })  # This is a hack to use the custom loss function in the last layer.
 
-
-    logging = TensorBoard()
     checkpoint = ModelCheckpoint("trained_stage_3_best.h5", monitor='val_loss',
                                  save_weights_only=True, save_best_only=True)
     early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=15, verbose=1, mode='auto')
@@ -255,8 +257,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               np.zeros(len(image_data)),
               validation_split=validation_split,
               batch_size=32,
-              epochs=5,
-              callbacks=[logging])
+              epochs=5)
     model.save_weights('trained_stage_1.h5')
 
     model_body, model = create_model(anchors, class_names, load_pretrained=False, freeze_body=False)
@@ -273,8 +274,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               np.zeros(len(image_data)),
               validation_split=0.1,
               batch_size=8,
-              epochs=30,
-              callbacks=[logging])
+              epochs=30)
 
     model.save_weights('trained_stage_2.h5')
 
@@ -283,7 +283,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               validation_split=0.1,
               batch_size=8,
               epochs=30,
-              callbacks=[logging, checkpoint, early_stopping])
+              callbacks=[checkpoint, early_stopping])
 
     model.save_weights('trained_stage_3.h5')
 
