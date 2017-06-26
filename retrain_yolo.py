@@ -19,11 +19,6 @@ from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
                                      SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
 
-import theano
-
-theano.config.optimizer = "fast_compile"
-# theano.config.exception_verbosity='high'
-
 # Args
 argparser = argparse.ArgumentParser(
     description="Retrain or 'fine-tune' a pretrained YOLOv2 model for your own data.")
