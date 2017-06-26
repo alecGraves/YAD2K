@@ -8,10 +8,10 @@ import random
 
 import numpy as np
 from keras import backend as K
-from keras.models import load_model
+from keras.models import Model, load_model
 from PIL import Image, ImageDraw, ImageFont
 
-from yad2k.models.keras_yolo import yolo_eval, yolo_head
+from yad2k.models.keras_yolo import yolo_eval, yolo_head, SpaceToDepth
 
 parser = argparse.ArgumentParser(
     description='Run a YOLO_v2 style detection model on test images..')
@@ -50,7 +50,7 @@ parser.add_argument(
     '--iou_threshold',
     type=float,
     help='threshold for non max suppression IOU, default .5',
-    default=.5)
+    default=.7)
 
 
 def _main(args):
@@ -65,8 +65,6 @@ def _main(args):
         print('Creating output path {}'.format(output_path))
         os.mkdir(output_path)
 
-    sess = K.get_session()  # TODO: Remove dependence on Tensorflow session.
-
     with open(classes_path) as f:
         class_names = f.readlines()
     class_names = [c.strip() for c in class_names]
@@ -76,7 +74,7 @@ def _main(args):
         anchors = [float(x) for x in anchors.split(',')]
         anchors = np.array(anchors).reshape(-1, 2)
 
-    yolo_model = load_model(model_path)
+    yolo_model = load_model(model_path, custom_objects={"SpaceToDepth": SpaceToDepth})
 
     # Verify model, anchors, and classes are compatible
     num_classes = len(class_names)
@@ -106,13 +104,14 @@ def _main(args):
 
     # Generate output tensor targets for filtered bounding boxes.
     # TODO: Wrap these backend operations with Keras layers.
-    yolo_outputs = yolo_head(yolo_model.output, anchors, len(class_names))
+    # yolo_outputs = yolo_head(yolo_model.output, anchors, len(class_names))
+    # yolo_model = Model(yolo_model.inputs, yolo_outputs)
     input_image_shape = K.placeholder(shape=(2, ))
-    boxes, scores, classes = yolo_eval(
-        yolo_outputs,
-        input_image_shape,
-        score_threshold=args.score_threshold,
-        iou_threshold=args.iou_threshold)
+    # boxes, scores, classes = yolo_eval(
+    #     yolo_outputs,
+    #     input_image_shape,
+    #     score_threshold=args.score_threshold,
+    #     iou_threshold=args.iou_threshold)
 
     for image_file in os.listdir(test_path):
         try:
@@ -120,6 +119,8 @@ def _main(args):
             if not image_type:
                 continue
         except IsADirectoryError:
+            continue
+        except PermissionError: #in windows, happens before dir error
             continue
 
         image = Image.open(os.path.join(test_path, image_file))
@@ -139,13 +140,21 @@ def _main(args):
         image_data /= 255.
         image_data = np.expand_dims(image_data, 0)  # Add batch dimension.
 
-        out_boxes, out_scores, out_classes = sess.run(
-            [boxes, scores, classes],
-            feed_dict={
-                yolo_model.input: image_data,
-                input_image_shape: [image.size[1], image.size[0]],
-                K.learning_phase(): 0
-            })
+        pred = yolo_model.predict(image_data)
+        yolo_out = list(yolo_head(pred, anchors, len(class_names)))
+        yolo_out = [K.eval(out) for out in yolo_out]
+        out_boxes, out_scores, out_classes = yolo_eval(
+            yolo_out,
+            (image.size[1], image.size[0]),
+            score_threshold=args.score_threshold,
+            iou_threshold=args.iou_threshold)
+        # out_boxes, out_scores, out_classes = sess.run(
+        #     [boxes, scores, classes],
+        #     feed_dict={
+        #         yolo_model.input: image_data,
+        #         input_image_shape: [image.size[1], image.size[0]],
+        #         K.learning_phase(): 0
+        #     })
         print('Found {} boxes for {}'.format(len(out_boxes), image_file))
 
         font = ImageFont.truetype(
@@ -187,8 +196,6 @@ def _main(args):
             del draw
 
         image.save(os.path.join(output_path, image_file), quality=90)
-    sess.close()
-
 
 if __name__ == '__main__':
     _main(parser.parse_args())

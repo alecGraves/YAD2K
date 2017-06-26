@@ -143,11 +143,11 @@ def yolo_head(feats, anchors, num_classes):
     conv_width_index = K.flatten(K.transpose(conv_width_index))
     conv_index = K.transpose(K.stack([conv_height_index, conv_width_index]))
     conv_index = K.reshape(conv_index, [1, conv_dims[0], conv_dims[1], 1, 2])
-    conv_index = K.cast(conv_index, K.dtype(feats))
+    conv_index = K.cast(conv_index, K.floatx())
 
     feats = K.reshape(
         feats, [-1, conv_dims[0], conv_dims[1], num_anchors, num_classes + 5])
-    conv_dims = K.cast(K.reshape(conv_dims, [1, 1, 1, 1, 2]), K.dtype(feats))
+    conv_dims = K.cast(K.reshape(conv_dims, [1, 1, 1, 1, 2]), K.floatx())
 
     # Static generation of conv_index:
     # conv_index = np.array([_ for _ in np.ndindex(conv_width, conv_height)])
@@ -182,12 +182,12 @@ def yolo_boxes_to_corners(box_xy, box_wh):
     box_mins = box_xy - (box_wh / 2.)
     box_maxes = box_xy + (box_wh / 2.)
 
-    return K.concatenate([
+    return np.concatenate([
         box_mins[..., 1:2],  # y_min
         box_mins[..., 0:1],  # x_min
         box_maxes[..., 1:2],  # y_max
         box_maxes[..., 0:1]  # x_max
-    ])
+    ], axis=-1)
 
 
 def yolo_loss(args,
@@ -292,7 +292,7 @@ def yolo_loss(args,
     best_ious = K.expand_dims(best_ious)
 
     # A detector has found an object if IOU > thresh for some true box.
-    object_detections = K.cast(K.greater(best_ious, 0.6), K.dtype(best_ious))
+    object_detections = K.cast(K.greater(best_ious, 0.6), K.floatx())
 
     # TODO: Darknet region training includes extra coordinate loss for early
     # training steps to encourage predictions to match anchor priors.
@@ -361,14 +361,15 @@ def yolo(inputs, anchors, num_classes):
 def yolo_filter_boxes(boxes, box_confidence, box_class_probs, threshold=.6):
     """Filter YOLO boxes based on object and class confidence."""
     box_scores = box_confidence * box_class_probs
-    box_classes = K.argmax(box_scores, axis=-1)
-    box_class_scores = K.max(box_scores, axis=-1)
-    prediction_mask = box_class_scores >= threshold
-
+    box_classes = np.argmax(box_scores, axis=-1)
+    box_class_scores = np.max(box_scores, axis=-1)
+    prediction_mask = np.greater_equal(box_class_scores, threshold)
+    
     # TODO: Expose tf.boolean_mask to Keras backend?
+
     boxes = np.array(boxes)[prediction_mask]
-    scores = np.array(box_class_scores)[prediction_mask]
-    classes = np.array(box_classes)[prediction_mask]
+    scores = box_class_scores[prediction_mask]
+    classes = box_classes[prediction_mask]
     return boxes, scores, classes
 
 
@@ -382,24 +383,73 @@ def yolo_eval(yolo_outputs,
     boxes = yolo_boxes_to_corners(box_xy, box_wh)
     boxes, scores, classes = yolo_filter_boxes(
         boxes, box_confidence, box_class_probs, threshold=score_threshold)
+    
 
     # Scale boxes back to original image shape.
     height = image_shape[0]
     width = image_shape[1]
-    image_dims = K.stack([height, width, height, width])
-    image_dims = K.reshape(image_dims, [1, 4])
+    image_dims = np.stack([height, width, height, width])
+    image_dims = np.reshape(image_dims, (1, 4))
     boxes = boxes * image_dims
+    # # TODO: Something must be done about this ugly hack!
+    # if K.backend() == 'tensorflow':
+    #     max_boxes_tensor = K.variable(max_boxes, dtype='int32')
+    #     K.get_session().run(tf.variables_initializer([max_boxes_tensor]))
+    #     nms_index = tf.image.non_max_suppression(
+    #         boxes, scores, max_boxes_tensor, iou_threshold=iou_threshold)
+    # else:
 
-    # TODO: Something must be done about this ugly hack!
-    max_boxes_tensor = K.variable(max_boxes, dtype='int32')
-    K.get_session().run(tf.variables_initializer([max_boxes_tensor]))
-    nms_index = tf.image.non_max_suppression(
-        boxes, scores, max_boxes_tensor, iou_threshold=iou_threshold)
-    boxes = K.gather(boxes, nms_index)
-    scores = K.gather(scores, nms_index)
-    classes = K.gather(classes, nms_index)
+    nms_index = non_max_suppression_py(
+        boxes, scores, max_boxes, iou_threshold)
+
+    # boxes = K.gather(boxes, nms_index)
+    # scores = K.gather(scores, nms_index)
+    # classes = K.gather(classes, nms_index)
+    boxes = boxes[nms_index]
+    scores = scores[nms_index]
+    classes = classes[nms_index]
+
     return boxes, scores, classes
 
+def non_max_suppression_py(boxes, scores, max_output_size, iou_threshold=0.5):
+    # Thanks Adrian Rosebrock
+    # see http://www.pyimagesearch.com/2015/02/16/faster-non-maximum-suppression-python/
+    #     for details.
+    boxes = np.array(boxes)
+    scores = np.array(scores)
+    if boxes.shape[0] == 0:
+	    return []
+    
+    selected_indices = []
+
+    y1 = boxes[:,0]
+    x1 = boxes[:,1]
+    y2 = boxes[:,2]
+    x2 = boxes[:,3]
+
+    area = (x2 - x1 + 1) * (y2 - y1 + 1)
+
+    sorted_indices = np.argsort(scores) # increasing argsort
+
+    while sorted_indices.shape[0] > 0:
+        last = sorted_indices.shape[0] - 1
+        i = sorted_indices[last]
+        selected_indices.append(i)
+
+        xx1 = np.maximum(x1[i], x1[sorted_indices[:last]])
+        yy1 = np.maximum(y1[i], y1[sorted_indices[:last]])
+        xx2 = np.minimum(x2[i], x2[sorted_indices[:last]])
+        yy2 = np.minimum(y2[i], y2[sorted_indices[:last]])
+
+        w = np.maximum(0, xx2 - xx1 + 1)
+        h = np.maximum(0, yy2 - yy1 + 1)
+
+        overlap = (w * h) / area[sorted_indices[:last]]
+
+        sorted_indices = np.delete(sorted_indices, np.concatenate(([last],
+            np.where(overlap > iou_threshold)[0])))
+
+    return selected_indices
 
 def preprocess_true_boxes(true_boxes, anchors, image_size):
     """Find detector in YOLO where ground truth box should appear.
