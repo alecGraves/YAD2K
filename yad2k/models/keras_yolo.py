@@ -97,7 +97,7 @@ def yolo_body(inputs, num_anchors, num_classes):
     return Model(inputs, x)
 
 
-def yolo_head(feats, anchors, num_classes):
+def yolo_head(feats, anchors, num_classes): # TODO: Turn this into a layer?
     """Convert final layer features to bounding box parameters.
 
     Parameters

@@ -5,10 +5,10 @@ import argparse
 
 import os
 
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
-import tensorflow as tf
 from keras import backend as K
 from keras.layers import Input, Lambda, Conv2D
 from keras.models import load_model, Model
@@ -19,6 +19,7 @@ from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
                                      SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
 
+
 # Args
 argparser = argparse.ArgumentParser(
     description="Retrain or 'fine-tune' a pretrained YOLOv2 model for your own data.")
@@ -27,7 +28,7 @@ argparser.add_argument(
     '-d',
     '--data_path',
     help="path to numpy data file (.npz) containing np.object array 'boxes' and np.uint8 array 'images'",
-    default=os.path.join('..', 'DATA', 'underwater_data.npz'))
+    default=os.path.join('..', 'DATA', 'my_data.npz'))
 
 argparser.add_argument(
     '-a',
@@ -39,7 +40,7 @@ argparser.add_argument(
     '-c',
     '--classes_path',
     help='path to classes file, defaults to pascal_classes.txt',
-    default=os.path.join('..', 'DATA', 'underwater_classes.txt'))
+    default=os.path.join('..', 'DATA', 'my_classes.txt'))
 
 # Default anchor boxes
 YOLO_ANCHORS = np.array(
@@ -68,22 +69,22 @@ def _main(args):
 
     model_body, model = create_model(anchors, class_names)
 
-    train(
-        model,
-        class_names,
-        anchors,
-        image_data,
-        boxes,
-        detectors_mask,
-        matching_true_boxes
-    )
+    # train(
+    #     model,
+    #     class_names,
+    #     anchors,
+    #     image_data,
+    #     boxes,
+    #     detectors_mask,
+    #     matching_true_boxes
+    # )
 
     draw(model_body,
         class_names,
         anchors,
         image_data,
         image_set='val', # assumes training/validation split is 0.9
-        weights_name='trained_stage_3_best.h5',
+        weights_name='trained_stage_2_best.h5',
         save_all=False)
 
 
@@ -204,24 +205,28 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
             model_body.save_weights(topless_yolo_path)
         topless_yolo.load_weights(topless_yolo_path)
 
-    if freeze_body:
+    if freeze_body: # freeze all layers
         for layer in topless_yolo.layers:
             layer.trainable = False
+    else: # freeze first 20 layers
+        for i, layer in enumerate(topless_yolo.layers):
+            if i < 20:
+                layer.trainable = False
+
     final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear')(topless_yolo.output)
 
     model_body = Model(image_input, final_layer)
 
-    # Place model loss on CPU to reduce GPU memory usage.
-    with tf.device('/cpu:0'):
-        # TODO: Replace Lambda with custom Keras layer for loss.
-        model_loss = Lambda(
-            yolo_loss,
-            output_shape=(1, ),
-            name='yolo_loss',
-            arguments={'anchors': anchors,
-                       'num_classes': len(class_names)})([
-                           model_body.output, boxes_input,
-                           detectors_mask_input, matching_boxes_input])
+
+    # TODO: Replace Lambda with custom Keras layer for loss.
+    model_loss = Lambda(
+        yolo_loss,
+        output_shape=(1, ),
+        name='yolo_loss',
+        arguments={'anchors': anchors,
+                    'num_classes': len(class_names)})([
+                        model_body.output, boxes_input,
+                        detectors_mask_input, matching_boxes_input])
 
     model = Model(
         [model_body.input, boxes_input, detectors_mask_input,
@@ -244,15 +249,16 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
             'yolo_loss': lambda y_true, y_pred: y_pred
         })  # This is a hack to use the custom loss function in the last layer.
 
-    checkpoint = ModelCheckpoint("trained_stage_3_best.h5", monitor='val_loss',
+    checkpoint = ModelCheckpoint("trained_stage_2_best.h5", monitor='val_loss',
                                  save_weights_only=True, save_best_only=True)
-    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=15, verbose=1, mode='auto')
+    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=4, verbose=1, mode='auto')
 
     model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
               np.zeros(len(image_data)),
               validation_split=validation_split,
               batch_size=32,
               epochs=5)
+
     model.save_weights('trained_stage_1.h5')
 
     model_body, model = create_model(anchors, class_names, load_pretrained=False, freeze_body=False)
@@ -269,21 +275,13 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               np.zeros(len(image_data)),
               validation_split=0.1,
               batch_size=8,
-              epochs=30)
-
-    model.save_weights('trained_stage_2.h5')
-
-    model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
-              np.zeros(len(image_data)),
-              validation_split=0.1,
-              batch_size=8,
               epochs=30,
               callbacks=[checkpoint, early_stopping])
 
-    model.save_weights('trained_stage_3.h5')
+    model.save_weights('trained_stage_2.h5')
 
 def draw(model_body, class_names, anchors, image_data, image_set='val',
-            weights_name='trained_stage_3_best.h5', out_path="output_images", save_all=True):
+            weights_name='trained_stage_2_best.h5', out_path="output_images", save_all=True):
     '''
     Draw bounding boxes on image data
     '''
@@ -301,33 +299,32 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
     # model.load_weights(weights_name)
     print(image_data.shape)
     model_body.load_weights(weights_name)
+    yolo_model = model_body # TODO: turn yolo_head into a layer and attach it here with Model()
 
-    # Create output variables for prediction.
-    yolo_outputs = yolo_head(model_body.output, anchors, len(class_names))
-    input_image_shape = K.placeholder(shape=(2, ))
-    boxes, scores, classes = yolo_eval(
-        yolo_outputs, input_image_shape, score_threshold=0.07, iou_threshold=0)
-
-    # Run prediction on overfit image.
-    sess = K.get_session()  # TODO: Remove dependence on Tensorflow session.
-
+    # Run predictions on specified images
     if  not os.path.exists(out_path):
         os.makedirs(out_path)
-    for i in range(len(image_data)):
-        out_boxes, out_scores, out_classes = sess.run(
-            [boxes, scores, classes],
-            feed_dict={
-                model_body.input: image_data[i],
-                input_image_shape: [image_data.shape[2], image_data.shape[3]],
-                K.learning_phase(): 0
-            })
+
+    print("EVALUATION START")
+    start = time.time()
+
+    for i, image in enumerate(image_data):
+        pred = yolo_model.predict(image)   
+        yolo_out = [K.eval(tensor) for tensor in yolo_head(pred, anchors, len(class_names))]
+
+        out_boxes, out_scores, out_classes = yolo_eval(
+            yolo_out,
+            (image.shape[1], image.shape[2]),
+            score_threshold=0.3,
+            iou_threshold=0.6)
+
         print('Found {} boxes for image.'.format(len(out_boxes)))
         print(out_boxes)
 
-        # Plot image with predicted boxes.
-        image_with_boxes = draw_boxes(image_data[i][0], out_boxes, out_classes,
+        Plot image with predicted boxes.
+        image_with_boxes = draw_boxes(image[0], out_boxes, out_classes,
                                     class_names, out_scores)
-        # Save the image:
+        Save the image:
         if save_all or (len(out_boxes) > 0):
             image = PIL.Image.fromarray(image_with_boxes)
             image.save(os.path.join(out_path,str(i)+'.png'))
@@ -336,7 +333,8 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
         # plt.imshow(image_with_boxes, interpolation='nearest')
         # plt.show()
 
-
+    end = time.time()
+    print('Predicted on', len(image_data), 'images in', end - start, 'seconds')
 
 if __name__ == '__main__':
     args = argparser.parse_args()
