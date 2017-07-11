@@ -4,6 +4,7 @@ This is a script that can be used to retrain the YOLOv2 model for your own datas
 import argparse
 
 import os
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,7 +27,7 @@ argparser.add_argument(
     '-d',
     '--data_path',
     help="path to numpy data file (.npz) containing np.object array 'boxes' and np.uint8 array 'images'",
-    default=os.path.join('..', 'DATA', 'underwater_data.npz'))
+    default=os.path.join('..', 'DATA', 'my_data.npz'))
 
 argparser.add_argument(
     '-a',
@@ -38,7 +39,7 @@ argparser.add_argument(
     '-c',
     '--classes_path',
     help='path to classes file, defaults to pascal_classes.txt',
-    default=os.path.join('..', 'DATA', 'underwater_classes.txt'))
+    default=os.path.join('..', 'DATA', 'my_classes.txt'))
 
 # Default anchor boxes
 YOLO_ANCHORS = np.array(
@@ -65,6 +66,7 @@ def _main(args):
 
     model_body, model = create_model(anchors, class_names)
 
+    # Training
     train(
         model,
         class_names,
@@ -75,12 +77,13 @@ def _main(args):
         matching_true_boxes
     )
 
+    # Evaulation
     draw(model_body,
         class_names,
         anchors,
         image_data,
         image_set='val', # assumes training/validation split is 0.9
-        weights_name='trained_stage_3_best.h5',
+        weights_name='trained_stage_2_best.h5',
         save_all=False)
 
 
@@ -201,9 +204,14 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
             model_body.save_weights(topless_yolo_path)
         topless_yolo.load_weights(topless_yolo_path)
 
-    if freeze_body:
+    if freeze_body: # freeze all layers
         for layer in topless_yolo.layers:
             layer.trainable = False
+    else: # freeze first 20 layers
+        for i, layer in enumerate(topless_yolo.layers):
+            if i < 20:
+                layer.trainable = False
+
     final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear')(topless_yolo.output)
 
     model_body = Model(image_input, final_layer)
@@ -244,16 +252,17 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
 
 
     logging = TensorBoard()
-    checkpoint = ModelCheckpoint("trained_stage_3_best.h5", monitor='val_loss',
+    checkpoint = ModelCheckpoint("trained_stage_2_best.h5", monitor='val_loss',
                                  save_weights_only=True, save_best_only=True)
-    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=15, verbose=1, mode='auto')
+    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=5, verbose=1, mode='auto')
 
+    # Adjust first layer
     model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
               np.zeros(len(image_data)),
               validation_split=validation_split,
               batch_size=32,
-              epochs=5,
-              callbacks=[logging])
+              epochs=5)
+
     model.save_weights('trained_stage_1.h5')
 
     model_body, model = create_model(anchors, class_names, load_pretrained=False, freeze_body=False)
@@ -271,21 +280,12 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               validation_split=0.1,
               batch_size=8,
               epochs=30,
-              callbacks=[logging])
+              callbacks=[logging, checkpoint, early_stopping])
 
     model.save_weights('trained_stage_2.h5')
 
-    model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
-              np.zeros(len(image_data)),
-              validation_split=0.1,
-              batch_size=8,
-              epochs=30,
-              callbacks=[logging, checkpoint, early_stopping])
-
-    model.save_weights('trained_stage_3.h5')
-
 def draw(model_body, class_names, anchors, image_data, image_set='val',
-            weights_name='trained_stage_3_best.h5', out_path="output_images", save_all=True):
+            weights_name='trained_stage_2_best.h5', out_path="output_images", save_all=True):
     '''
     Draw bounding boxes on image data
     '''
@@ -308,13 +308,16 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
     yolo_outputs = yolo_head(model_body.output, anchors, len(class_names))
     input_image_shape = K.placeholder(shape=(2, ))
     boxes, scores, classes = yolo_eval(
-        yolo_outputs, input_image_shape, score_threshold=0.07, iou_threshold=0)
+        yolo_outputs, input_image_shape, score_threshold=0.3, iou_threshold=0.6)
 
     # Run prediction on overfit image.
     sess = K.get_session()  # TODO: Remove dependence on Tensorflow session.
 
     if  not os.path.exists(out_path):
         os.makedirs(out_path)
+
+    start = time.time()
+    
     for i in range(len(image_data)):
         out_boxes, out_scores, out_classes = sess.run(
             [boxes, scores, classes],
@@ -338,6 +341,10 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
         # plt.imshow(image_with_boxes, interpolation='nearest')
         # plt.show()
 
+    end = time.time()
+
+    print('Evaluated', len(image_data), 'images in', end - start, 'seconds.')
+    print('That is', len(image_data)/(end-start), 'frames per second!')
 
 
 if __name__ == '__main__':
