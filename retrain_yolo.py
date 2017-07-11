@@ -69,15 +69,15 @@ def _main(args):
 
     model_body, model = create_model(anchors, class_names)
 
-    # train(
-    #     model,
-    #     class_names,
-    #     anchors,
-    #     image_data,
-    #     boxes,
-    #     detectors_mask,
-    #     matching_true_boxes
-    # )
+    train(
+        model,
+        class_names,
+        anchors,
+        image_data,
+        boxes,
+        detectors_mask,
+        matching_true_boxes
+    )
 
     draw(model_body,
         class_names,
