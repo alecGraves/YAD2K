@@ -113,6 +113,7 @@ def process_data(images, boxes=None):
 
     # Image preprocessing.
     processed_images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
+    del images
     processed_images = [np.array(image, dtype=np.float) for image in processed_images]
     processed_images = [image/255. for image in processed_images]
 
@@ -316,6 +317,7 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
     if  not os.path.exists(out_path):
         os.makedirs(out_path)
 
+    print('Beginning Evaluation!')
     start = time.time()
     
     for i in range(len(image_data)):
