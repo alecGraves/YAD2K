@@ -1,8 +1,8 @@
 """Draw predicted or ground truth boxes on input image."""
+from __future__ import division
 
 import colorsys
 import random
-
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 

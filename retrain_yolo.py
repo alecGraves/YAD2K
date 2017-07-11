@@ -284,6 +284,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
               callbacks=[logging, checkpoint, early_stopping])
 
     model.save_weights('trained_stage_2.h5')
+    model_body.save(os.path.join('model_data', 'trained_body.h5'))
 
 def draw(model_body, class_names, anchors, image_data, image_set='val',
             weights_name='trained_stage_2_best.h5', out_path="output_images", save_all=True):
@@ -314,7 +315,7 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
     # Run prediction on overfit image.
     sess = K.get_session()  # TODO: Remove dependence on Tensorflow session.
 
-    if  not os.path.exists(out_path):
+    if not os.path.exists(out_path):
         os.makedirs(out_path)
 
     print('Beginning Evaluation!')
