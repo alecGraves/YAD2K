@@ -256,7 +256,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
     logging = TensorBoard()
     checkpoint = ModelCheckpoint("trained_stage_2_best.h5", monitor='val_loss',
                                  save_weights_only=True, save_best_only=True)
-    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=2, verbose=1, mode='auto')
+    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=5, verbose=1, mode='auto')
 
     # Adjust first layer
     model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
