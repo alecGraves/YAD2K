@@ -113,7 +113,7 @@ def process_data(images, boxes=None):
 
     # Image preprocessing.
     images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
-    images = [np.array(image, dtype=np.float) for image in images]
+    images = [np.array(image, dtype=np.float16) for image in images]
     images = [image/255. for image in images]
 
     if boxes is not None:
