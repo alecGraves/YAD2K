@@ -112,10 +112,9 @@ def process_data(images, boxes=None):
     orig_size = np.expand_dims(orig_size, axis=0)
 
     # Image preprocessing.
-    processed_images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
-    del images
-    processed_images = [np.array(image, dtype=np.float) for image in processed_images]
-    processed_images = [image/255. for image in processed_images]
+    images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
+    images = [np.array(image, dtype=np.float) for image in images]
+    images = [image/255. for image in images]
 
     if boxes is not None:
         # Box preprocessing.
@@ -144,9 +143,9 @@ def process_data(images, boxes=None):
                 zero_padding = np.zeros( (max_boxes-boxz.shape[0], 5), dtype=np.float32)
                 boxes[i] = np.vstack((boxz, zero_padding))
 
-        return np.array(processed_images), np.array(boxes)
+        return np.array(images), np.array(boxes)
     else:
-        return np.array(processed_images)
+        return np.array(images)
 
 def get_detector_mask(boxes, anchors):
     '''
