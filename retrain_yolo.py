@@ -1,11 +1,9 @@
 """
 This is a script that can be used to retrain the YOLOv2 model for your own dataset.
 """
-import argparse
-
 import os
 import time
-
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
@@ -76,8 +74,6 @@ def _main(args):
         detectors_mask,
         matching_true_boxes
     )
-
-    model_body.save('model_data/retrained.h5')
 
     # Evaulation
     draw(model_body,
