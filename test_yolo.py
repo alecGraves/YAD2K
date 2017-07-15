@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python  
 """Run a YOLO_v2 style detection model on test images."""
 import argparse
 import colorsys
@@ -11,7 +11,7 @@ from keras import backend as K
 from keras.models import Model, load_model
 from PIL import Image, ImageDraw, ImageFont
 
-from yad2k.models.keras_yolo import yolo_eval, yolo_head, SpaceToDepth
+from yad2k.models.keras_yolo import yolo_eval, yolo_head_np, SpaceToDepth
 
 parser = argparse.ArgumentParser(
     description='Run a YOLO_v2 style detection model on test images..')
@@ -141,20 +141,15 @@ def _main(args):
         image_data = np.expand_dims(image_data, 0)  # Add batch dimension.
 
         pred = yolo_model.predict(image_data)
-        yolo_out = list(yolo_head(pred, anchors, len(class_names)))
-        yolo_out = [K.eval(out) for out in yolo_out]
+
+        yolo_out = yolo_head_np(pred, anchors, num_classes)
+
         out_boxes, out_scores, out_classes = yolo_eval(
             yolo_out,
             (image.size[1], image.size[0]),
             score_threshold=args.score_threshold,
             iou_threshold=args.iou_threshold)
-        # out_boxes, out_scores, out_classes = sess.run(
-        #     [boxes, scores, classes],
-        #     feed_dict={
-        #         yolo_model.input: image_data,
-        #         input_image_shape: [image.size[1], image.size[0]],
-        #         K.learning_phase(): 0
-        #     })
+
         print('Found {} boxes for {}'.format(len(out_boxes), image_file))
 
         font = ImageFont.truetype(

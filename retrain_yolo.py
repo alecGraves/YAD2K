@@ -305,12 +305,16 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
     if  not os.path.exists(out_path):
         os.makedirs(out_path)
 
+    num_classes = len(class_names)
+    num_images = len(image_data)
+
     print("EVALUATION START")
-    start = time.time()
+    total_time = 0
 
     for i, image in enumerate(image_data):
+        start = time.time() # Time the computation
         pred = yolo_model.predict(image)   
-        yolo_out = [K.eval(tensor) for tensor in yolo_head(pred, anchors, len(class_names))]
+        yolo_out = yolo_head_np(pred, anchors, num_classes)
 
         out_boxes, out_scores, out_classes = yolo_eval(
             yolo_out,
@@ -318,13 +322,16 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
             score_threshold=0.3,
             iou_threshold=0.6)
 
+        end = time.time() # Do not include time to write to disk
+        total_time += end - start
+
         print('Found {} boxes for image.'.format(len(out_boxes)))
         print(out_boxes)
 
-        Plot image with predicted boxes.
+        # Plot image with predicted boxes.
         image_with_boxes = draw_boxes(image[0], out_boxes, out_classes,
                                     class_names, out_scores)
-        Save the image:
+        # Save the image:
         if save_all or (len(out_boxes) > 0):
             image = PIL.Image.fromarray(image_with_boxes)
             image.save(os.path.join(out_path,str(i)+'.png'))
@@ -333,8 +340,8 @@ def draw(model_body, class_names, anchors, image_data, image_set='val',
         # plt.imshow(image_with_boxes, interpolation='nearest')
         # plt.show()
 
-    end = time.time()
-    print('Predicted on', len(image_data), 'images in', end - start, 'seconds')
+    print('Predicted on',num_images , 'images in', total_time, 'seconds')
+    print('That is', num_images/total_time, 'frames per second!')
 
 if __name__ == '__main__':
     args = argparser.parse_args()
