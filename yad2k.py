@@ -21,6 +21,7 @@ from keras.layers.normalization import BatchNormalization
 from keras.models import Model
 from keras.regularizers import l2
 from keras.utils.vis_utils import plot_model as plot
+from keras.utils.conv_utils import convert_kernel
 
 from yad2k.models.keras_yolo import SpaceToDepth
 
@@ -159,8 +160,9 @@ def _main(args):
             # (out_dim, in_dim, height, width)
             # We would like to set these to Tensorflow order:
             # (height, width, in_dim, out_dim)
-            # TODO: Add check for Theano dim ordering.
             conv_weights = np.transpose(conv_weights, [2, 3, 1, 0])
+            if K.backend() == 'theano': # Add check for Theano dim ordering.
+                conv_weights = convert_kernel(conv_weights)
             conv_weights = [conv_weights] if batch_normalize else [
                 conv_weights, conv_bias
             ]
