@@ -2,16 +2,16 @@
 This is a script that can be used to retrain the YOLOv2 model for your own dataset.
 """
 import argparse
-
 import os
-
 import time
+import json
+
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 from keras import backend as K
 from keras.layers import Input, Lambda, Conv2D
-from keras.models import load_model, Model
+from keras.models import load_model, model_from_json, Model
 from keras.callbacks import ModelCheckpoint, EarlyStopping
 
 from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
@@ -181,41 +181,65 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
 
     '''
 
-    detectors_mask_shape = (13, 13, 5, 1)
-    matching_boxes_shape = (13, 13, 5, 5)
+    detectors_mask_shape = (None, None, 5, 1)
+    matching_boxes_shape = (None, None, 5, len(anchors))
 
     # Create model input layers.
-    image_input = Input(shape=(416, 416, 3))
+    image_input = Input(shape=(None, None, 3))
     boxes_input = Input(shape=(None, 5))
     detectors_mask_input = Input(shape=detectors_mask_shape)
     matching_boxes_input = Input(shape=matching_boxes_shape)
 
-    # Create model body.
-    yolo_model = yolo_body(image_input, len(anchors), len(class_names))
+    # Save model as JSON.
+    yolo = None
+    yolo_json_path = os.path.join('model_data', 'yolo.json')
+    if not os.path.isfile(yolo_json_path): # if not already saved:
+        # serialize model to JSON and save
+        yolo_path = os.path.join('model_data', 'yolo.h5')
+        yolo = load_model(yolo_path, CUSTOM_DICT)
+        yolo_json = yolo.to_json()
+        with open(yolo_json_path, "w") as json_file:
+            json_file.write(yolo_json)
+
+    # Load model from JSON.
+    yolo_json_file = open(yolo_json_path, 'r')
+    yolo_json = yolo_json_file.read()
+    yolo_json_file.close()
+    yolo_model = model_from_json(yolo_json, CUSTOM_DICT)
+
+
     topless_yolo = Model(yolo_model.input, yolo_model.layers[-2].output)
+
 
     if load_pretrained:
         # Save topless yolo:
         topless_yolo_path = os.path.join('model_data', 'yolo_topless.h5')
-        if not os.path.exists(topless_yolo_path):
+        if not os.path.isfile(topless_yolo_path):
             print("CREATING TOPLESS WEIGHTS FILE")
-            yolo_path = os.path.join('model_data', 'yolo.h5')
-            model_body = load_model(yolo_path, CUSTOM_DICT)
-            model_body = Model(model_body.inputs, model_body.layers[-2].output)
+            if yolo is None: # yolo is not loaded
+                # load yolo
+                yolo_path = os.path.join('model_data', 'yolo.h5')
+                yolo = load_model(yolo_path, CUSTOM_DICT)
+
+            model_body = Model(yolo.inputs, yolo.layers[-2].output)
             model_body.save_weights(topless_yolo_path)
+
         topless_yolo.load_weights(topless_yolo_path)
 
-    if freeze_body: # freeze all layers
+
+    if freeze_body:
+        # Freeze all layers.
         for layer in topless_yolo.layers:
             layer.trainable = False
-    else: # freeze first 20 layers
+    else:
+        # Freeze first 20 layers.
         for i, layer in enumerate(topless_yolo.layers):
             if i < 20:
                 layer.trainable = False
 
-    final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear')(topless_yolo.output)
+    final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear', name='final_layer')(topless_yolo.output)
 
-    model_body = Model(image_input, final_layer)
+    model_body = Model(yolo_model.input, final_layer)
 
 
     # TODO: Replace Lambda with custom Keras layer for loss.
@@ -228,9 +252,11 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
                         model_body.output, boxes_input,
                         detectors_mask_input, matching_boxes_input])
 
+
     model = Model(
         [model_body.input, boxes_input, detectors_mask_input,
          matching_boxes_input], model_loss)
+
 
     return model_body, model
 
