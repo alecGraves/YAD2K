@@ -171,7 +171,7 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
 
     load_pretrained: whether or not to load the pretrained model or initialize all weights
 
-    freeze_body: whether or not to freeze all weights except for the last layer's
+    frozen: number of layers to be frozen, defaults to all but last layer.
 
     # Returns:
 
@@ -231,7 +231,7 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
         # Freeze all layers.
         for layer in topless_yolo.layers:
             layer.trainable = False
-    else:
+    elif frozen > 0:
         # Freeze first <frozen> layers.
         for i, layer in enumerate(topless_yolo.layers):
             if i < frozen:
