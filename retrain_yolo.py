@@ -163,7 +163,7 @@ def get_detector_mask(boxes, anchors):
 
     return np.array(detectors_mask), np.array(matching_true_boxes)
 
-def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
+def create_model(anchors, class_names, load_pretrained=True, frozen=None):
     '''
     returns the body of the model and the model
 
@@ -227,14 +227,14 @@ def create_model(anchors, class_names, load_pretrained=True, freeze_body=True):
         topless_yolo.load_weights(topless_yolo_path)
 
 
-    if freeze_body:
+    if frozen is None:
         # Freeze all layers.
         for layer in topless_yolo.layers:
             layer.trainable = False
     else:
-        # Freeze first 20 layers.
+        # Freeze first <frozen> layers.
         for i, layer in enumerate(topless_yolo.layers):
-            if i < 20:
+            if i < frozen:
                 layer.trainable = False
 
     final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear', name='final_layer')(topless_yolo.output)
@@ -270,14 +270,13 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
 
     best weights according to val_loss is saved as trained_stage_3_best.h5
     '''
+    #--------------------------------------------------------------
+    # Train for 5 epochs, allowing weights of last layer to adjust
+    #--------------------------------------------------------------
     model.compile(
         optimizer='adam', loss={
             'yolo_loss': lambda y_true, y_pred: y_pred
         })  # This is a hack to use the custom loss function in the last layer.
-
-    checkpoint = ModelCheckpoint("trained_stage_2_best.h5", monitor='val_loss',
-                                 save_weights_only=True, save_best_only=True)
-    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=4, verbose=1, mode='auto')
 
     model.fit([image_data, boxes, detectors_mask, matching_true_boxes],
               np.zeros(len(image_data)),
@@ -287,9 +286,17 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
 
     model.save_weights('trained_stage_1.h5')
 
-    model_body, model = create_model(anchors, class_names, load_pretrained=False, freeze_body=False)
+
+    #--------------------------------------------------------------
+    # train with fewer frozen layers, stop when improvements stop
+    #--------------------------------------------------------------
+    model_body, model = create_model(anchors, class_names, load_pretrained=False, frozen=20) # freeze first 20 layers
 
     model.load_weights('trained_stage_1.h5')
+
+    checkpoint = ModelCheckpoint("trained_stage_2_best.h5", monitor='val_loss',
+                                 save_weights_only=True, save_best_only=True)
+    early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=4, verbose=1, mode='auto')
 
     model.compile(
         optimizer='adam', loss={
