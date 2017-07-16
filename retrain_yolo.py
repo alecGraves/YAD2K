@@ -106,16 +106,15 @@ def get_anchors(anchors_path):
         Warning("Could not open anchors file, using default.")
         return YOLO_ANCHORS
 
-def process_data(images, boxes=None):
+def process_data(images, boxes=None, img_shape=(416, 416)):
     '''processes the data'''
     images = [PIL.Image.fromarray(i) for i in images]
-    orig_size = np.array([images[0].width, images[0].height])
-    orig_size = np.expand_dims(orig_size, axis=0)
+    orig_sizes = [np.expand_dims(np.array([image.width, image.height]), axis=0) for image in images]
 
     # Image preprocessing.
-    processed_images = [i.resize((416, 416), PIL.Image.BICUBIC) for i in images]
-    processed_images = [np.array(image, dtype=np.float) for image in processed_images]
-    processed_images = [image/255. for image in processed_images]
+    images = [i.resize(img_shape, PIL.Image.BICUBIC) for i in images]
+    images = [np.array(image, dtype=np.float16) for image in images]
+    images = [image/255. for image in images]
 
     if boxes is not None:
         # Box preprocessing.
@@ -128,8 +127,8 @@ def process_data(images, boxes=None):
         # Get box parameters as x_center, y_center, box_width, box_height, class.
         boxes_xy = [0.5 * (box[:, 3:5] + box[:, 1:3]) for box in boxes]
         boxes_wh = [box[:, 3:5] - box[:, 1:3] for box in boxes]
-        boxes_xy = [boxxy / orig_size for boxxy in boxes_xy]
-        boxes_wh = [boxwh / orig_size for boxwh in boxes_wh]
+        boxes_xy = [boxxy / orig_size for orig_size, boxxy in zip(orig_sizes, boxes_xy)]
+        boxes_wh = [boxwh / orig_size for orig_size, boxwh in zip(orig_sizes, boxes_wh)]
         boxes = [np.concatenate((boxes_xy[i], boxes_wh[i], box[:, 0:1]), axis=1) for i, box in enumerate(boxes)]
 
         # find the max number of boxes
@@ -144,9 +143,9 @@ def process_data(images, boxes=None):
                 zero_padding = np.zeros( (max_boxes-boxz.shape[0], 5), dtype=np.float32)
                 boxes[i] = np.vstack((boxz, zero_padding))
 
-        return np.array(processed_images), np.array(boxes)
+        return np.array(images), np.array(boxes)
     else:
-        return np.array(processed_images)
+        return np.array(images)
 
 def get_detector_mask(boxes, anchors):
     '''
