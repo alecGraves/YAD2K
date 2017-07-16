@@ -15,7 +15,7 @@ from keras.models import load_model, model_from_json, Model
 from keras.callbacks import ModelCheckpoint, EarlyStopping
 
 from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
-                                     yolo_eval, yolo_head, yolo_loss,
+                                     yolo_eval, yolo_head_np, yolo_loss,
                                      SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
 
