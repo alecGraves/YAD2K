@@ -71,8 +71,14 @@ class SpaceToDepth(Layer):
             in_depth = input_shape[3]
 
         batch_size = input_shape[0]
-        out_height = in_height // self.block_size
-        out_width = in_width // self.block_size
+        if in_height is None:
+            out_height=None
+        else:
+            out_height = in_height // self.block_size
+        if in_width is None:
+            out_width = None
+        else:
+            out_width = in_width // self.block_size
         out_depth = in_depth * (self.block_size ** 2)
 
         if K.image_data_format() == 'channels_first':
