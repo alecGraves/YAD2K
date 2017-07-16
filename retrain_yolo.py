@@ -61,11 +61,7 @@ def _main(args):
     #  has 2 arrays: an object array 'boxes' (variable length of boxes in each image)
     #  and an array of images 'images'
 
-    image_data, boxes = process_data(data['images'], data['boxes'])
-
-    anchors = YOLO_ANCHORS
-
-    detectors_mask, matching_true_boxes = get_detector_mask(boxes, anchors)
+    image_data, boxes, detectors_mask, matching_true_boxes = process_data(data['images'], data['boxes'], anchors)
 
     model_body, model = create_model(anchors, class_names)
 
@@ -85,7 +81,9 @@ def _main(args):
         image_data,
         image_set='val', # assumes training/validation split is 0.9
         weights_name='trained_stage_2_best.h5',
-        save_all=False)
+        save_all=False
+        score_threshold=0.3,
+        iou_threshold=0.6)
 
 
 def get_classes(classes_path):
@@ -106,15 +104,36 @@ def get_anchors(anchors_path):
         Warning("Could not open anchors file, using default.")
         return YOLO_ANCHORS
 
-def process_data(images, boxes=None, img_shape=(416, 416)):
-    '''processes the data'''
+def process_data(images, boxes=None, anchors=None, image_train_shape=(416, 416)):
+    '''
+    Processes the data for training.
+    # Params:
+
+    images: Numpy array or list with each image allowed to have its own height and width. Must have 3 channels.
+
+    boxes: Original boxes stored as 1D array of [class, x_min, y_min, x_max, y_max]
+
+    anchors: List of tuples describing box priors
+
+    image_train_shape: Shape to convert dataset to for training. Defaults to (416, 416). Must be a multiple of 32.
+
+    # Returns:
+
+    images: Images as an array for training. Has shape (nb_images, image_train_shape, 3)
+    
+    boxes: Proessed boxes for training. Returned if input boxes specified.
+    
+    detectors_mask: for training; is 1 for each spatial position in the final conv layer and \
+    anchor that should be active for the given boxes and 0 otherwise. Returned if boxes and anchors specified.
+    
+    matching_true_boxes: for training; gives the regression targets for the ground truth box \
+    that caused a detector to be active or 0 otherwise. Returned if boxes and anchors specified.
+    '''
     images = [PIL.Image.fromarray(i) for i in images]
     orig_sizes = [np.expand_dims(np.array([image.width, image.height]), axis=0) for image in images]
 
     # Image preprocessing.
-    images = [i.resize(img_shape, PIL.Image.BICUBIC) for i in images]
-    images = [np.array(image, dtype=np.float16) for image in images]
-    images = [image/255. for image in images]
+    images = [np.array(i.resize(image_train_shape, PIL.Image.BICUBIC), dtype=np.float16)/255 for i in images]
 
     if boxes is not None:
         # Box preprocessing.
@@ -142,12 +161,17 @@ def process_data(images, boxes=None, img_shape=(416, 416)):
             if boxz.shape[0]  < max_boxes:
                 zero_padding = np.zeros( (max_boxes-boxz.shape[0], 5), dtype=np.float32)
                 boxes[i] = np.vstack((boxz, zero_padding))
+        
+        if anchors is not None:
+            detectors_mask, matching_true_boxes = _get_detector_mask(boxes, anchors, image_train_shape)
+            return np.array(images), np.array(boxes), detectors_mask, matching_true_boxes
 
         return np.array(images), np.array(boxes)
-    else:
+
+    else: # boxes not given
         return np.array(images)
 
-def get_detector_mask(boxes, anchors):
+def _get_detector_mask(boxes, anchors, image_train_shape=(416, 416)):
     '''
     Precompute detectors_mask and matching_true_boxes for training.
     Detectors mask is 1 for each spatial position in the final conv layer and
@@ -158,7 +182,7 @@ def get_detector_mask(boxes, anchors):
     detectors_mask = [0 for i in range(len(boxes))]
     matching_true_boxes = [0 for i in range(len(boxes))]
     for i, box in enumerate(boxes):
-        detectors_mask[i], matching_true_boxes[i] = preprocess_true_boxes(box, anchors, [416, 416])
+        detectors_mask[i], matching_true_boxes[i] = preprocess_true_boxes(box, anchors, image_train_shape)
 
     return np.array(detectors_mask), np.array(matching_true_boxes)
 
@@ -170,7 +194,7 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
 
     load_pretrained: whether or not to load the pretrained model or initialize all weights
 
-    frozen: number of layers to be frozen, defaults to all but last layer.
+    frozen: fraction of model to be frozen, defaults to all but last layer.
 
     # Returns:
 
@@ -230,10 +254,11 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
         # Freeze all layers.
         for layer in topless_yolo.layers:
             layer.trainable = False
-    elif frozen > 0:
-        # Freeze first <frozen> layers.
+    elif frozen > .0001:
+        # Freeze first <frozen>% of the model.
+        unfreeze = int(frozen*len(topless_yolo.layers))
         for i, layer in enumerate(topless_yolo.layers):
-            if i < frozen:
+            if i < unfreeze:
                 layer.trainable = False
 
     final_layer = Conv2D(len(anchors)*(5+len(class_names)), (1, 1), activation='linear', name='final_layer')(topless_yolo.output)
@@ -289,7 +314,7 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
     #--------------------------------------------------------------
     # train with fewer frozen layers, stop when improvements stop
     #--------------------------------------------------------------
-    model_body, model = create_model(anchors, class_names, load_pretrained=False, frozen=20) # freeze first 20 layers
+    model_body, model = create_model(anchors, class_names, load_pretrained=False, frozen=.7) # freeze first 20 layers
 
     model.load_weights('trained_stage_1.h5')
 
@@ -313,7 +338,8 @@ def train(model, class_names, anchors, image_data, boxes, detectors_mask, matchi
     model.save_weights('trained_stage_2.h5')
 
 def draw(model_body, class_names, anchors, image_data, image_set='val',
-            weights_name='trained_stage_2_best.h5', out_path="output_images", save_all=True):
+            weights_name='trained_stage_2_best.h5', out_path="output_images",
+            save_all=True, score_threshold=0.3, iou_threshold=0.6):
     '''
     Draw bounding boxes on image data
     '''
