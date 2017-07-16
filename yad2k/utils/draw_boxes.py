@@ -1,5 +1,5 @@
 """Draw predicted or ground truth boxes on input image."""
-
+from __future__ import division
 import colorsys
 import random
 
@@ -47,7 +47,7 @@ def draw_boxes(image, boxes, box_classes, class_names, scores=None):
     font = ImageFont.truetype(
         font='font/FiraMono-Medium.otf',
         size=np.floor(3e-2 * image.size[1] + 0.5).astype('int32'))
-    thickness = (image.size[0] + image.size[1]) // 300
+    thickness = max((image.size[0] + image.size[1]) // 300, 1)
 
     colors = get_colors_for_classes(len(class_names))
 

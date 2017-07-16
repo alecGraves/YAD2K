@@ -81,7 +81,7 @@ def _main(args):
         image_data,
         image_set='val', # assumes training/validation split is 0.9
         weights_name='trained_stage_2_best.h5',
-        save_all=False
+        save_all=False,
         score_threshold=0.3,
         iou_threshold=0.6)
 
