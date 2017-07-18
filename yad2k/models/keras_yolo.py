@@ -2,10 +2,10 @@
 import sys
 
 import numpy as np
-import tensorflow as tf
+import itertools
 from keras import backend as K
-from keras.layers import Lambda
-from keras.layers.merge import concatenate
+from keras.layers import Layer
+from keras.layers import Concatenate
 from keras.models import Model
 
 from ..utils import compose
@@ -23,24 +23,71 @@ voc_classes = [
     "pottedplant", "sheep", "sofa", "train", "tvmonitor"
 ]
 
+class SpaceToDepth(Layer):
+    '''
+    keras implementation of space_to_depth as a layer
+    '''
+    def __init__(self, block_size=2, **kwargs):
+        self.block_size = block_size
+        super(SpaceToDepth, self).__init__(**kwargs)
 
-def space_to_depth_x2(x):
-    """Thin wrapper for Tensorflow space_to_depth with block_size=2."""
-    # Import currently required to make Lambda work.
-    # See: https://github.com/fchollet/keras/issues/5088#issuecomment-273851273
-    import tensorflow as tf
-    return tf.space_to_depth(x, block_size=2)
+    def build(self, input_shape):
+        super(SpaceToDepth, self).build(input_shape)
+
+    def call(self, x, mask=None):
+        """
+        Uses algorithms to convert spatial resolution to channels/depth
+        """
+        if K.backend() == "tensorflow":
+            import tensorflow as tf
+            return tf.space_to_depth(x, block_size=self.block_size)
+        else:
+            out_shape = self.compute_output_shape(K.shape(x))
+
+            out = K.reshape(K.zeros_like(x), out_shape)
+
+            r = self.block_size
+            products = [(x, y) for x in range(r) for y in range(r)]
+            if K.image_data_format() == 'channels_first':
+                for a, b in products:
+                    K.update_add(out[:, r * a + b:: r * r, :, :], x[:, :, a::r, b::r])
+            else:
+                for a, b in products:
+                    K.update_add(out[:, :, :, r * a + b:: r * r], x[:, a::r, b::r, :])
+            return out
 
 
-def space_to_depth_x2_output_shape(input_shape):
-    """Determine space_to_depth output shape for block_size=2.
+    def compute_output_shape(self, input_shape):
+        """
+        Determine SpaceToDepth output shape
+        """
+        if K.image_data_format() == 'channels_first':
+            in_height = input_shape[2]
+            in_width = input_shape[3]
+            in_depth = input_shape[1]
+        else:
+            in_height = input_shape[1]
+            in_width = input_shape[2]
+            in_depth = input_shape[3]
 
-    Note: For Lambda with TensorFlow backend, output shape may not be needed.
-    """
-    return (input_shape[0], input_shape[1] // 2, input_shape[2] // 2, 4 *
-            input_shape[3]) if input_shape[1] else (input_shape[0], None, None,
-                                                    4 * input_shape[3])
+        batch_size = input_shape[0]
+        if in_height is None:
+            out_height=None
+        else:
+            out_height = in_height // self.block_size
+        if in_width is None:
+            out_width = None
+        else:
+            out_width = in_width // self.block_size
+        out_depth = in_depth * (self.block_size ** 2)
 
+        if K.image_data_format() == 'channels_first':
+            return batch_size, out_depth, out_height, out_width
+        else:
+            return batch_size, out_height, out_width, out_depth
+
+### Custom dictionary object to load the model
+CUSTOM_DICT = {"SpaceToDepth" : SpaceToDepth}
 
 def yolo_body(inputs, num_anchors, num_classes):
     """Create YOLO_V2 model CNN body in Keras."""
@@ -51,19 +98,15 @@ def yolo_body(inputs, num_anchors, num_classes):
 
     conv13 = darknet.layers[43].output
     conv21 = DarknetConv2D_BN_Leaky(64, (1, 1))(conv13)
-    # TODO: Allow Keras Lambda to use func arguments for output_shape?
-    conv21_reshaped = Lambda(
-        space_to_depth_x2,
-        output_shape=space_to_depth_x2_output_shape,
-        name='space_to_depth')(conv21)
 
-    x = concatenate([conv21_reshaped, conv20])
+    conv21_reshaped = SpaceToDepth(block_size=2)(conv21)
+    x = Concatenate()([conv21_reshaped, conv20])
     x = DarknetConv2D_BN_Leaky(1024, (3, 3))(x)
     x = DarknetConv2D(num_anchors * (num_classes + 5), (1, 1))(x)
     return Model(inputs, x)
 
 
-def yolo_head(feats, anchors, num_classes):
+def yolo_head(feats, anchors, num_classes): # TODO: Turn this into a layer?
     """Convert final layer features to bounding box parameters.
 
     Parameters
@@ -109,11 +152,11 @@ def yolo_head(feats, anchors, num_classes):
     conv_width_index = K.flatten(K.transpose(conv_width_index))
     conv_index = K.transpose(K.stack([conv_height_index, conv_width_index]))
     conv_index = K.reshape(conv_index, [1, conv_dims[0], conv_dims[1], 1, 2])
-    conv_index = K.cast(conv_index, K.dtype(feats))
+    conv_index = K.cast(conv_index, K.floatx())
 
     feats = K.reshape(
         feats, [-1, conv_dims[0], conv_dims[1], num_anchors, num_classes + 5])
-    conv_dims = K.cast(K.reshape(conv_dims, [1, 1, 1, 1, 2]), K.dtype(feats))
+    conv_dims = K.cast(K.reshape(conv_dims, [1, 1, 1, 1, 2]), K.floatx())
 
     # Static generation of conv_index:
     # conv_index = np.array([_ for _ in np.ndindex(conv_width, conv_height)])
@@ -126,7 +169,95 @@ def yolo_head(feats, anchors, num_classes):
     box_xy = K.sigmoid(feats[..., :2])
     box_wh = K.exp(feats[..., 2:4])
     box_confidence = K.sigmoid(feats[..., 4:5])
-    box_class_probs = K.softmax(feats[..., 5:])
+
+    if K.backend() == 'theano': # theano softmax only works on 2d input for now
+        class_values = feats[..., 5:]
+        exp_x = K.exp(class_values)
+        sum_exp_x = K.expand_dims(K.sum(exp_x, axis=-1))
+        box_class_probs = exp_x/sum_exp_x
+    else:
+        box_class_probs = K.softmax(feats[..., 5:])
+
+    # Adjust preditions to each spatial grid point and anchor size.
+    # Note: YOLO iterates over height index before width index.
+    box_xy = (box_xy + conv_index) / conv_dims
+    box_wh = box_wh * anchors_tensor / conv_dims
+
+    return box_xy, box_wh, box_confidence, box_class_probs
+
+
+def yolo_head_np(feats, anchors, num_classes):
+    '''
+    pure numpy implementation of yolo_head.
+
+    Convert final layer features to bounding box parameters.
+
+    Parameters
+    ----------
+    feats : np array
+        Final convolutional layer features.
+    anchors : array-like
+        Anchor box widths and heights.
+    num_classes : int
+        Number of target classes.
+
+    Returns
+    -------
+    box_xy : tensor
+        x, y box predictions adjusted by spatial location in conv layer.
+    box_wh : tensor
+        w, h box predictions adjusted by anchors and conv spatial resolution.
+    box_conf : tensor
+        Probability estimate for whether each box contains any object.
+    box_class_pred : tensor
+        Probability distribution estimate for each box over class labels.
+    '''
+    num_anchors = len(anchors)
+    # Reshape to batch, height, width, num_anchors, box_params.
+    anchors_tensor = np.reshape(anchors, [1, 1, 1, num_anchors, 2])
+
+    # Static implementation for fixed models.
+    # TODO: Remove or add option for static implementation.
+    # _, conv_height, conv_width, _ = K.int_shape(feats)
+    # conv_dims = K.variable([conv_width, conv_height])
+
+    # Dynamic implementation of conv dims for fully convolutional model.
+    conv_dims = np.shape(feats)[1:3]  # assuming channels last
+    # In YOLO the height index is the inner most iteration.
+    conv_height_index = np.arange(0, stop=conv_dims[0])
+    conv_width_index = np.arange(0, stop=conv_dims[1])
+    conv_height_index = np.tile(conv_height_index, [conv_dims[1]])
+
+    # TODO: Repeat_elements and tf.split doesn't support dynamic splits.
+    # conv_width_index = K.repeat_elements(conv_width_index, conv_dims[1], axis=0)
+    conv_width_index = np.tile(
+        np.expand_dims(conv_width_index, 0), [conv_dims[0], 1])
+    conv_width_index = np.ravel(np.transpose(conv_width_index))
+    conv_index = np.transpose(np.stack([conv_height_index, conv_width_index]))
+    conv_index = np.reshape(conv_index, [1, conv_dims[0], conv_dims[1], 1, 2])
+
+
+    feats = np.reshape(
+        feats, [-1, conv_dims[0], conv_dims[1], num_anchors, num_classes + 5])
+    conv_dims = np.reshape(conv_dims, [1, 1, 1, 1, 2])
+
+    # Static generation of conv_index:
+    # conv_index = np.array([_ for _ in np.ndindex(conv_width, conv_height)])
+    # conv_index = conv_index[:, [1, 0]]  # swap columns for YOLO ordering.
+    # conv_index = K.variable(
+    #     conv_index.reshape(1, conv_height, conv_width, 1, 2))
+    # feats = Reshape(
+    #     (conv_dims[0], conv_dims[1], num_anchors, num_classes + 5))(feats)
+
+    box_xy = 1 / (1 + np.exp(-feats[..., :2]))
+    box_wh = np.exp(feats[..., 2:4])
+    box_confidence = 1 / (1 + np.exp(-feats[..., 4:5]))
+
+
+    class_values = feats[..., 5:]
+    exp_x = np.exp(class_values)
+    sum_exp_x = np.expand_dims(np.sum(exp_x, axis=-1), axis=-1)
+    box_class_probs = exp_x/sum_exp_x
 
     # Adjust preditions to each spatial grid point and anchor size.
     # Note: YOLO iterates over height index before width index.
@@ -141,12 +272,12 @@ def yolo_boxes_to_corners(box_xy, box_wh):
     box_mins = box_xy - (box_wh / 2.)
     box_maxes = box_xy + (box_wh / 2.)
 
-    return K.concatenate([
+    return np.concatenate([
         box_mins[..., 1:2],  # y_min
         box_mins[..., 0:1],  # x_min
         box_maxes[..., 1:2],  # y_max
         box_maxes[..., 0:1]  # x_max
-    ])
+    ], axis=-1)
 
 
 def yolo_loss(args,
@@ -247,11 +378,11 @@ def yolo_loss(args,
     iou_scores = intersect_areas / union_areas
 
     # Best IOUs for each location.
-    best_ious = K.max(iou_scores, axis=4)  # Best IOU scores.
+    best_ious = K.max(iou_scores, axis=-1)  # Best IOU scores.
     best_ious = K.expand_dims(best_ious)
 
     # A detector has found an object if IOU > thresh for some true box.
-    object_detections = K.cast(best_ious > 0.6, K.dtype(best_ious))
+    object_detections = K.cast(K.greater(best_ious, 0.6), K.floatx())
 
     # TODO: Darknet region training includes extra coordinate loss for early
     # training steps to encourage predictions to match anchor priors.
@@ -260,7 +391,7 @@ def yolo_loss(args,
     # NOTE: YOLO does not use binary cross-entropy here.
     no_object_weights = (no_object_scale * (1 - object_detections) *
                          (1 - detectors_mask))
-    no_objects_loss = no_object_weights * K.square(-pred_confidence)
+    no_objects_loss = no_object_weights * K.square(-1*pred_confidence)
 
     if rescore_confidence:
         objects_loss = (object_scale * detectors_mask *
@@ -274,13 +405,24 @@ def yolo_loss(args,
     # NOTE: YOLO does not use categorical cross-entropy loss here.
     matching_classes = K.cast(matching_true_boxes[..., 4], 'int32')
     matching_classes = K.one_hot(matching_classes, num_classes)
-    classification_loss = (class_scale * detectors_mask *
-                           K.square(matching_classes - pred_class_prob))
+    if K.backend() == 'theano': # theano  does not know what broadcasting is
+        c1 = K.tile(class_scale * detectors_mask, (1, 1, 1, 1, num_classes))
+        c2 = K.square(matching_classes - pred_class_prob)
+        classification_loss = c1 * c2
+    else:
+        classification_loss = (class_scale * detectors_mask * 
+                               K.square(matching_classes - pred_class_prob))
 
     # Coordinate loss for matching detection boxes.
     matching_boxes = matching_true_boxes[..., 0:4]
-    coordinates_loss = (coordinates_scale * detectors_mask *
+    if K.backend() == 'theano': # theano does not know what broadcasting is
+        c1 = K.tile(coordinates_scale * detectors_mask, (1, 1, 1, 1, 4))
+        c2 = K.square(matching_boxes - pred_boxes)
+        coordinates_loss = c1 * c2
+    else:
+        coordinates_loss = (coordinates_scale * detectors_mask *
                         K.square(matching_boxes - pred_boxes))
+
 
     confidence_loss_sum = K.sum(confidence_loss)
     classification_loss_sum = K.sum(classification_loss)
@@ -288,7 +430,7 @@ def yolo_loss(args,
     total_loss = 0.5 * (
         confidence_loss_sum + classification_loss_sum + coordinates_loss_sum)
     if print_loss:
-        total_loss = tf.Print(
+        total_loss = K.print_tensor(
             total_loss, [
                 total_loss, confidence_loss_sum, classification_loss_sum,
                 coordinates_loss_sum
@@ -309,14 +451,15 @@ def yolo(inputs, anchors, num_classes):
 def yolo_filter_boxes(boxes, box_confidence, box_class_probs, threshold=.6):
     """Filter YOLO boxes based on object and class confidence."""
     box_scores = box_confidence * box_class_probs
-    box_classes = K.argmax(box_scores, axis=-1)
-    box_class_scores = K.max(box_scores, axis=-1)
-    prediction_mask = box_class_scores >= threshold
-
+    box_classes = np.argmax(box_scores, axis=-1)
+    box_class_scores = np.max(box_scores, axis=-1)
+    prediction_mask = np.greater_equal(box_class_scores, threshold)
+    
     # TODO: Expose tf.boolean_mask to Keras backend?
-    boxes = tf.boolean_mask(boxes, prediction_mask)
-    scores = tf.boolean_mask(box_class_scores, prediction_mask)
-    classes = tf.boolean_mask(box_classes, prediction_mask)
+
+    boxes = np.array(boxes)[prediction_mask]
+    scores = box_class_scores[prediction_mask]
+    classes = box_classes[prediction_mask]
     return boxes, scores, classes
 
 
@@ -330,24 +473,73 @@ def yolo_eval(yolo_outputs,
     boxes = yolo_boxes_to_corners(box_xy, box_wh)
     boxes, scores, classes = yolo_filter_boxes(
         boxes, box_confidence, box_class_probs, threshold=score_threshold)
+    
 
     # Scale boxes back to original image shape.
     height = image_shape[0]
     width = image_shape[1]
-    image_dims = K.stack([height, width, height, width])
-    image_dims = K.reshape(image_dims, [1, 4])
+    image_dims = np.stack([height, width, height, width])
+    image_dims = np.reshape(image_dims, (1, 4))
     boxes = boxes * image_dims
+    # # TODO: Something must be done about this ugly hack!
+    # if K.backend() == 'tensorflow':
+    #     max_boxes_tensor = K.variable(max_boxes, dtype='int32')
+    #     K.get_session().run(tf.variables_initializer([max_boxes_tensor]))
+    #     nms_index = tf.image.non_max_suppression(
+    #         boxes, scores, max_boxes_tensor, iou_threshold=iou_threshold)
+    # else:
 
-    # TODO: Something must be done about this ugly hack!
-    max_boxes_tensor = K.variable(max_boxes, dtype='int32')
-    K.get_session().run(tf.variables_initializer([max_boxes_tensor]))
-    nms_index = tf.image.non_max_suppression(
-        boxes, scores, max_boxes_tensor, iou_threshold=iou_threshold)
-    boxes = K.gather(boxes, nms_index)
-    scores = K.gather(scores, nms_index)
-    classes = K.gather(classes, nms_index)
+    nms_index = non_max_suppression_py(
+        boxes, scores, max_boxes, iou_threshold)
+
+    # boxes = K.gather(boxes, nms_index)
+    # scores = K.gather(scores, nms_index)
+    # classes = K.gather(classes, nms_index)
+    boxes = boxes[nms_index]
+    scores = scores[nms_index]
+    classes = classes[nms_index]
+
     return boxes, scores, classes
 
+def non_max_suppression_py(boxes, scores, max_output_size, iou_threshold=0.5):
+    # Thanks Adrian Rosebrock
+    # see http://www.pyimagesearch.com/2015/02/16/faster-non-maximum-suppression-python/
+    #     for details.
+    boxes = np.array(boxes)
+    scores = np.array(scores)
+    if boxes.shape[0] == 0:
+	    return []
+    
+    selected_indices = []
+
+    y1 = boxes[:,0]
+    x1 = boxes[:,1]
+    y2 = boxes[:,2]
+    x2 = boxes[:,3]
+
+    area = (x2 - x1 + 1) * (y2 - y1 + 1)
+
+    sorted_indices = np.argsort(scores) # increasing argsort
+
+    while sorted_indices.shape[0] > 0:
+        last = sorted_indices.shape[0] - 1
+        i = sorted_indices[last]
+        selected_indices.append(i)
+
+        xx1 = np.maximum(x1[i], x1[sorted_indices[:last]])
+        yy1 = np.maximum(y1[i], y1[sorted_indices[:last]])
+        xx2 = np.minimum(x2[i], x2[sorted_indices[:last]])
+        yy2 = np.minimum(y2[i], y2[sorted_indices[:last]])
+
+        w = np.maximum(0, xx2 - xx1 + 1)
+        h = np.maximum(0, yy2 - yy1 + 1)
+
+        overlap = (w * h) / area[sorted_indices[:last]]
+
+        sorted_indices = np.delete(sorted_indices, np.concatenate(([last],
+            np.where(overlap > iou_threshold)[0])))
+
+    return selected_indices
 
 def preprocess_true_boxes(true_boxes, anchors, image_size):
     """Find detector in YOLO where ground truth box should appear.

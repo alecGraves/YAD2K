@@ -7,6 +7,7 @@
 images/*
 images/out/*
 model_data/*_anchors.txt
+model_data/yolo.json
 
 # Editor settings
 *.vscode/
