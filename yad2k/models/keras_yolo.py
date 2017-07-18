@@ -86,6 +86,9 @@ class SpaceToDepth(Layer):
         else:
             return batch_size, out_height, out_width, out_depth
 
+### Custom dictionary object to load the model
+CUSTOM_DICT = {"SpaceToDepth" : SpaceToDepth}
+
 def yolo_body(inputs, num_anchors, num_classes):
     """Create YOLO_V2 model CNN body in Keras."""
     darknet = Model(inputs, darknet_body()(inputs))
