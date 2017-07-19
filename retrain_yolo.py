@@ -19,6 +19,7 @@ from yad2k.models.keras_yolo import (preprocess_true_boxes, yolo_body,
                                      SpaceToDepth)
 from yad2k.utils.draw_boxes import draw_boxes
 
+FILEDIR = os.path.dirname(os.path.abspath(__file__))
 
 # Args
 argparser = argparse.ArgumentParser(
@@ -187,7 +188,7 @@ def _get_detector_mask(boxes, anchors, image_train_shape=(416, 416)):
 
     return np.array(detectors_mask), np.array(matching_true_boxes)
 
-def create_model(anchors, class_names, load_pretrained=True, frozen=None):
+def create_model(anchors, class_names, load_pretrained=True, frozen=None, json_path=None):
     '''
     returns the body of the model and the model
 
@@ -216,10 +217,14 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
 
     # Save model as JSON.
     yolo = None
-    yolo_json_path = os.path.join('model_data', 'yolo.json')
+    if json_path is None:
+        yolo_json_path = os.path.join(FILEDIR, 'model_data', 'yolo.json')
+    else:
+        yolo_json_path = json_path
+
     if not os.path.isfile(yolo_json_path): # if not already saved:
         # serialize model to JSON and save
-        yolo_path = os.path.join('model_data', 'yolo.h5')
+        yolo_path = os.path.join(FILEDIR, 'model_data', 'yolo.h5')
         yolo = load_model(yolo_path, CUSTOM_DICT)
         yolo_json = yolo.to_json()
         with open(yolo_json_path, "w") as json_file:
@@ -237,12 +242,12 @@ def create_model(anchors, class_names, load_pretrained=True, frozen=None):
 
     if load_pretrained:
         # Save topless yolo:
-        topless_yolo_path = os.path.join('model_data', 'yolo_topless.h5')
+        topless_yolo_path = os.path.join(FILEDIR, 'model_data', 'yolo_topless.h5')
         if not os.path.isfile(topless_yolo_path):
             print("CREATING TOPLESS WEIGHTS FILE")
             if yolo is None: # yolo is not loaded
                 # load yolo
-                yolo_path = os.path.join('model_data', 'yolo.h5')
+                yolo_path = os.path.join(FILEDIR, 'model_data', 'yolo.h5')
                 yolo = load_model(yolo_path, CUSTOM_DICT)
 
             model_body = Model(yolo.inputs, yolo.layers[-2].output)
