@@ -52,7 +52,7 @@ def unique_config_sections(config_file):
     Adds unique suffixes to config sections for compability with configparser.
     """
     section_counters = defaultdict(int)
-    output_stream = StringIO()
+    output_stream = ""
     with open(config_file) as fin:
         for line in fin:
             if line.startswith('['):
@@ -60,8 +60,7 @@ def unique_config_sections(config_file):
                 _section = section + '_' + str(section_counters[section])
                 section_counters[section] += 1
                 line = line.replace(section, _section)
-            output_stream.write(line.encode('utf-8'))
-    output_stream.seek(0)
+            output_stream += line + '\n'
     return output_stream
 
 
@@ -82,16 +81,22 @@ def _main(args):
     # Load weights and config.
     print('Loading weights.')
     weights_file = open(weights_path, 'rb')
-    weights_header = np.ndarray(
-        shape=(4, ), dtype='int32', buffer=weights_file.read(16))
+    weights_header = np.int64(np.ndarray(
+        shape=(4, ), dtype='int32', buffer=weights_file.read(16)))
+    major = weights_header[0]
+    minor = weights_header[1]
+    if (major*10 + minor) >= 2 and major < 1000 and minor < 1000:
+        final = np.int64(np.ndarray(shape=(1, ), dtype='int32', buffer=weights_file.read(4)))
+        weights_header[3] = np.bitwise_or(np.left_shift(final, 4), weights_header[3])
     print('Weights Header: ', weights_header)
+
     # TODO: Check transpose flag when implementing fully connected layers.
     # transpose = (weight_header[0] > 1000) or (weight_header[1] > 1000)
 
     print('Parsing Darknet config.')
     unique_config_file = unique_config_sections(config_path)
     cfg_parser = configparser.ConfigParser()
-    cfg_parser.read_file(unique_config_file)
+    cfg_parser.read_string(unique_config_file)
 
     print('Creating Keras model.')
     if args.fully_convolutional:
@@ -259,7 +264,7 @@ def _main(args):
     print('Read {} of {} from Darknet weights.'.format(count, count +
                                                        remaining_weights))
     if remaining_weights > 0:
-        print('Warning: {} unused weights'.format(len(remaining_weights)))
+        print('Warning: {} unused weights'.format(remaining_weights))
 
     if args.plot_model:
         plot(model, to_file='{}.png'.format(output_root), show_shapes=True)
